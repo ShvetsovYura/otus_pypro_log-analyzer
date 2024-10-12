@@ -1,0 +1,7 @@
+**__pycache__**
+.pytest_cache
+.vscode
+reports/*.html
+logs/
+.coverage
+app_logs/
