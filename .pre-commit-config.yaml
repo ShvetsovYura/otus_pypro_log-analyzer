@@ -7,7 +7,7 @@ repos:
         entry: isort
         language: system
         types: [ python ]
-        stages: [ commit ]
+        stages: [ pre-commit ]
 
  
 
@@ -16,7 +16,7 @@ repos:
         entry: black
         language: system
         types: [ python ]
-        stages: [ commit ]
+        stages: [ pre-commit ]
 
  
 
@@ -25,7 +25,7 @@ repos:
         entry: flake8
         language: python
         types: [ python ]
-        stages: [commit]
+        stages: [pre-commit]
 
  
 
@@ -35,7 +35,7 @@ repos:
         language: system
         types: [ python ]
         require_serial: true
-        stages: [commit]
+        stages: [pre-commit]
 
  
 
@@ -46,7 +46,7 @@ repos:
         types: [ python ]
         require_serial: true
         verbose: true
-        stages: [commit]
+        stages: [pre-commit]
 
  
 
@@ -57,4 +57,4 @@ repos:
         pass_filenames: false
         always_run: true
         verbose: true
-        stages: [commit]
+        stages: [pre-commit]
