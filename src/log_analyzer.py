@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from string import Template
-from typing import Any, Callable, Generator, Mapping, MutableMapping
+from typing import Any, Generator, Mapping, MutableMapping
 
 import structlog
 
@@ -35,10 +35,11 @@ structlog.configure(
     processors=[
         structlog.processors.add_log_level,
         log_level_filter,
-        # structlog.processors.UnicodeEncoder(),
         structlog.processors.StackInfoRenderer(),
-        structlog.dev.set_exc_info,
+        # structlog.dev.set_exc_info,
         structlog.processors.TimeStamper(fmt="iso", utc=False),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
         structlog.processors.JSONRenderer(),
     ],
 )
@@ -64,31 +65,20 @@ class LogFileMeta:
     ext: str
 
 
-def zip_log_reader(path: Path) -> Generator[str, None, None]:
+def log_reader(opener: Any, mode: str, path: Path) -> Generator[str, None, None]:
     # pylint: disable=use-yield-from
-    with gzip.open(
-        path,
-        encoding="utf-8",
-        mode="rt",
-    ) as f:
-        for line in f:
-            yield line
+    try:
+        with opener(path, encoding="utf-8", mode=mode) as f:
+            for line in f:
+                yield line
+    except FileNotFoundError as e:
+        log.error(e)
+        raise
 
 
-def raw_log_reader(path: Path) -> Generator[str, None, None]:
-    # pylint: disable=use-yield-from
-    with open(
-        path,
-        encoding="utf-8",
-        mode="r",
-    ) as f:
-        for line in f:
-            yield line
-
-
-log_type_stragegy: dict[str, Callable[[Path], Generator[str, None, None]]] = {
-    "": raw_log_reader,
-    "gz": zip_log_reader,
+log_type_opener_stragegy = {
+    "": (open, "r"),
+    ".gz": (gzip.open, "rt"),
 }
 
 
@@ -133,7 +123,12 @@ def parse_log_record(line: str) -> dict[str, str] | None:
 def parse_log_filename(log_filename: str) -> dict[str, str]:
     search_result = re.search(logname_format, log_filename)
     if search_result is None:
-        raise ValueError("Не удалось разобрать имя файла")
+        log.error("filename could not be parsed %s", log_filename)
+        return {
+            "name": log_filename,
+            "dt": "",
+            "ext": "__broken__",
+        }
     res = search_result.groupdict()
     return res | {"filename": log_filename}
 
@@ -147,7 +142,7 @@ def adapt_to_log_file_metadata(dirpath: str, fd: dict[str, str]) -> LogFileMeta:
 
 def get_last_log_file_meta(log_dir: Path) -> LogFileMeta | None:
     if not log_dir.is_dir():
-        raise FileNotFoundError("Передан путь файла. Ожидается путь до директории")
+        raise FileNotFoundError("File path was passed. Expected path to directory")
 
     dirpath, _, filenames = next(os.walk(log_dir), (None, None, []))
     last_founded: LogFileMeta | None = None
@@ -204,11 +199,7 @@ def make_report_name(meta: LogFileMeta) -> str:
 
 
 def calc_is_error_treshold(logs_count: int, errors_count: int, treshold: float | None) -> bool:
-    if errors_count > logs_count:
-        return False
-    if treshold is None:
-        return False
-    if treshold > 1:
+    if errors_count > logs_count or treshold is None or treshold > 1:
         return False
 
     ratio = errors_count / logs_count
@@ -216,14 +207,23 @@ def calc_is_error_treshold(logs_count: int, errors_count: int, treshold: float |
 
 
 def main(cfg: Mapping[str, Any]) -> None:
-    log_file = get_last_log_file_meta(Path.cwd().joinpath(cfg["LOG_DIR"]))
-    if log_file is None:
-        raise FileNotFoundError()
-    if check_report_is_exists(cfg["REPORT_DIR"], log_file):
-        log.info("Файл отчета уже существует")
+    try:
+        log_file = get_last_log_file_meta(Path.cwd().joinpath(cfg["LOG_DIR"]))
+    except ValueError as e:
+        log.error(e)
         return
-    read_strategy = log_type_stragegy[log_file.ext]
-    log_line_reader_gen = read_strategy(log_file.path)
+    if log_file is None:
+        log.error("Log file not found")
+        return
+    if check_report_is_exists(cfg["REPORT_DIR"], log_file):
+        log.info("Report file already exists")
+        return
+    if log_file.ext not in log_type_opener_stragegy:
+        log.error("File reader stategy not found for extension %s", log_file.ext)
+        return
+
+    opener, mode = log_type_opener_stragegy[log_file.ext]
+    log_line_reader_gen = log_reader(opener, mode, log_file.path)
     logs, err_lines, total_read = aggregate_logs(log_line_reader_gen)
     if calc_is_error_treshold(total_read, len(err_lines), cfg.get("PARSE_ERR_TRESHOLD_RATIO")):
         log.error("error threshold has been exceeded")
@@ -249,10 +249,14 @@ if __name__ == "__main__":
     file_config = read_config(args.config)
     app_cfg = ChainMap(file_config, config)
     if app_cfg.get("APP_LOGS"):
-        with open(Path(app_cfg["APP_LOGS"]), encoding="utf-8", mode="wt") as logfile:
-            structlog.configure(
-                logger_factory=structlog.WriteLoggerFactory(file=logfile),
-            )
-    main(app_cfg)
-    log.error("alarma!")
-    log.critical("ugugug!")
+        try:
+            with open(Path(app_cfg["APP_LOGS"]), encoding="utf-8", mode="wt") as logfile:
+                structlog.configure(
+                    logger_factory=structlog.WriteLoggerFactory(file=logfile),
+                )
+        except PermissionError as e:
+            log.error("setup app log file %s", e)
+    try:
+        main(app_cfg)
+    except BaseException as e:  # pylint:disable=broad-exception-caught
+        log.exception(e)

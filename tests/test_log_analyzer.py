@@ -48,7 +48,16 @@ def test_calc_is_error_treshold(total: int, errors: int, treshold: float | None,
                 }
             ),
         ),
-        ("my-awesome-log", pytest.raises(ValueError)),
+        (
+            "my-awesome-log",
+            nullcontext(
+                {
+                    "name": "my-awesome-log",
+                    "dt": "",
+                    "ext": "__broken__",
+                }
+            ),
+        ),
     ],
 )
 def test_parse_log_filename(filename: str, expected: Any) -> None:
